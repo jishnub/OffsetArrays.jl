@@ -20,7 +20,7 @@ julia> ro[-1]
 -1
 
 julia> ro[3]
-ERROR: BoundsError: attempt to access 3-element UnitRange{$Int} at index [5]
+ERROR: BoundsError: attempt to access 3-element OffsetArrays.IdOffsetRange{Int64,UnitRange{Int64}} with indices -1:1 at index [3]
 ```
 
 If the range doesn't start at 1, the values may be different from the indices:
@@ -35,7 +35,7 @@ julia> ro[-1]
 9
 
 julia> ro[3]
-ERROR: BoundsError: attempt to access 3-element UnitRange{$Int} at index [5]
+ERROR: BoundsError: attempt to access 3-element OffsetArrays.IdOffsetRange{Int64,UnitRange{Int64}} with indices -1:1 at index [3]
 ```
 
 # Extended help
@@ -78,10 +78,10 @@ struct IdOffsetRange{T<:Integer,I<:AbstractUnitRange{T}} <: AbstractUnitRange{T}
     offset::T
 
     IdOffsetRange{T,I}(r::I, offset::T) where {T<:Integer,I<:AbstractUnitRange{T}} = new{T,I}(r, offset)
-    
-    #= This method is necessary to avoid a StackOverflowError in IdOffsetRange{T,I}(r::IdOffsetRange, offset::Integer). 
-    The type signature in that method is more specific than IdOffsetRange{T,I}(r::I, offset::T), 
-    so it ends up calling itself if I <: IdOffsetRange. 
+
+    #= This method is necessary to avoid a StackOverflowError in IdOffsetRange{T,I}(r::IdOffsetRange, offset::Integer).
+    The type signature in that method is more specific than IdOffsetRange{T,I}(r::I, offset::T),
+    so it ends up calling itself if I <: IdOffsetRange.
     =#
     function IdOffsetRange{T,IdOffsetRange{T,I}}(r::IdOffsetRange{T,I}, offset::T) where {T<:Integer,I<:AbstractUnitRange{T}}
         new{T,IdOffsetRange{T,I}}(r, offset)
@@ -155,14 +155,19 @@ end
     return (ret[1] + r.offset, ret[2])
 end
 
-@propagate_inbounds Base.getindex(r::IdOffsetRange, i::Integer) = r.parent[i - r.offset] + r.offset
-@propagate_inbounds function Base.getindex(r::IdOffsetRange, s::AbstractUnitRange{<:Integer})
-    pr = r.parent[s .- r.offset] .+ r.offset
+@inline function Base.getindex(r::IdOffsetRange, i::Integer)
+    @boundscheck checkbounds(r, i)
+    @inbounds r.parent[i - r.offset] + r.offset
+end
+@inline function Base.getindex(r::IdOffsetRange, s::AbstractUnitRange{<:Integer})
+    @boundscheck checkbounds(r, s)
+    @inbounds pr = r.parent[s .- r.offset] .+ r.offset
     _maybewrapoffset(pr, axes(s,1))
 end
 # The following method is required to avoid falling back to getindex(::AbstractUnitRange, ::StepRange{<:Integer})
-@propagate_inbounds function Base.getindex(r::IdOffsetRange, s::StepRange{<:Integer})
-    rs = r.parent[s .- r.offset] .+ r.offset
+@inline function Base.getindex(r::IdOffsetRange, s::StepRange{<:Integer})
+    @boundscheck checkbounds(r, s)
+    @inbounds rs = r.parent[s .- r.offset] .+ r.offset
     return no_offset_view(rs)
 end
 
