@@ -145,12 +145,7 @@ for f in [:firstindex, :lastindex, :first, :last]
     @eval @inline Base.$f(r::IdOffsetRange) = $f(r.parent) + r.offset
 end
 
-Base.iterate(r::IdOffsetRange) = isempty(r) ? nothing : (first(r), first(r))
-function Base.iterate(r::IdOffsetRange, this)
-    this == last(r) && return nothing
-    next = this + one(this)
-    (next, next)
-end
+@inline Base.iterate(r::IdOffsetRange, i...) = iterate(UnitRange(r), i...)
 
 @propagate_inbounds Base.getindex(r::IdOffsetRange, i::Integer) = r.parent[i - r.offset] + r.offset
 @propagate_inbounds function Base.getindex(r::IdOffsetRange, s::AbstractUnitRange{<:Integer})
