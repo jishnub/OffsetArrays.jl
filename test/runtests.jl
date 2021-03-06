@@ -60,18 +60,18 @@ for Z in [:ZeroBasedRange, :ZeroBasedUnitRange]
     for R in [:AbstractRange, :AbstractUnitRange, :StepRange]
         @eval @inline function Base.getindex(A::$Z, r::$R{<:Integer})
             @boundscheck checkbounds(A, r)
-            OffsetArray(A.a[r .+ 1], axes(r))
+            OffsetArrays._maybewrapoffset(A.a[r .+ 1], axes(r,1))
         end
     end
     for R in [:UnitRange, :StepRange, :StepRangeLen, :LinRange]
         @eval @inline function Base.getindex(A::$R, r::$Z)
             @boundscheck checkbounds(A, r)
-            OffsetArray(A[r.a], axes(r))
+            OffsetArrays._maybewrapoffset(A[r.a], axes(r,1))
         end
     end
     @eval @inline function Base.getindex(A::StepRangeLen{<:Any,<:Base.TwicePrecision,<:Base.TwicePrecision}, r::$Z)
         @boundscheck checkbounds(A, r)
-        OffsetArray(A[r.a], axes(r))
+        OffsetArrays._maybewrapoffset(A[r.a], axes(r,1))
     end
 end
 
@@ -876,7 +876,12 @@ end
 
     for r1 in Any[
         # AbstractArrays
+        ones(100),
+        ones(-1:100),
+
+        # OffsetRanges
         OffsetArray(10:1000, 0), # 1-based index
+        OffsetArray(UnitRange(10.0, 1000.0), 0), # 1-based index
         OffsetArray(10:3:1000, 3), # offset index
         OffsetArray(10.0:3:1000.0, 0), # 1-based index
         OffsetArray(10.0:3:1000.0, 3), # offset index
@@ -892,6 +897,10 @@ end
         1.0:3.0:1000.0,
         StepRangeLen(Float64(1), Float64(1000), 1000),
         LinRange(1, 1000, 1000),
+        Base.Slice(Base.OneTo(1000)), # 1-based index
+        IdentityUnitRange(Base.OneTo(1000)), # 1-based index
+        IdOffsetRange(Base.OneTo(1000)), # 1-based index
+        IdentityUnitRange(2:1000), # offset index
         IdOffsetRange(ZeroBasedUnitRange(1:1000), 1), # 1-based index
         IdOffsetRange(ZeroBasedUnitRange(1:1000), 2), # offset index
         ZeroBasedUnitRange(1:1000), # offset range
@@ -919,6 +928,10 @@ end
             ]
 
             test_indexing_axes_and_vals(r1, r2)
+
+            if r1 isa AbstractRange && axes(r2, 1) isa Base.OneTo
+                @test r1[r2] isa AbstractRange
+            end
         end
     end
 
@@ -931,10 +944,14 @@ end
         # This set of tests is for ranges r1 that have 1-based indices
         UnitRange(1.0, 99.0),
         1:99,
+        Base.OneTo(99),
         1:1:99,
         1.0:1.0:99.0,
         StepRangeLen(Float64(1), Float64(99), 99),
         LinRange(1, 99, 99),
+        Base.Slice(Base.OneTo(99)),
+        IdentityUnitRange(Base.OneTo(99)),
+        IdOffsetRange(Base.OneTo(99)),
         ]
 
         for r2 in Any[
@@ -944,6 +961,9 @@ end
             ]
 
             test_indexing_axes_and_vals(r1, r2)
+            if axes(r2, 1) isa Base.OneTo
+                @test r1[r2] isa AbstractRange
+            end
         end
     end
 end
@@ -953,11 +973,11 @@ end
     r1 = r[0:1]
     @test r1 === 9:10
     r1 = (8:10)[OffsetArray(1:2, -5:-4)]
-    @test axes(r1) == (IdentityUnitRange(-5:-4),)
-    @test parent(r1) === 8:9
+    @test axes(r1) == (-5:-4,)
+    @test no_offset_view(r1) == 8:9
     r1 = OffsetArray(8:10, -1:1)[OffsetArray(0:1, -5:-4)]
-    @test axes(r1) == (IdentityUnitRange(-5:-4),)
-    @test parent(r1) === 9:10
+    @test axes(r1) == (-5:-4,)
+    @test no_offset_view(r1) == 9:10
 
     a = OffsetVector(3:4, 10:11)
     ax = OffsetArrays.IdOffsetRange(5:6, 5)
@@ -974,7 +994,12 @@ end
 
     for r1 in Any[
         # AbstractArrays
+        ones(100),
+        ones(-1:100),
+
+        # OffsetRanges
         OffsetArray(10:1000, 0), # 1-based index
+        OffsetArray(UnitRange(10.0, 1000.0), 0), # 1-based index
         OffsetArray(10:1000, 3), # offset index
         OffsetArray(10:3:1000, 0), # 1-based index
         OffsetArray(10:3:1000, 3), # offset index
@@ -992,10 +1017,14 @@ end
         1.0:2.0:2000.0,
         StepRangeLen(Float64(1), Float64(1000), 1000),
         LinRange(1.0, 2000.0, 2000),
+        IdOffsetRange(Base.OneTo(1000)), # 1-based index
         IdOffsetRange(1:1000, 0), # 1-based index
+        IdOffsetRange(Base.OneTo(1000), 4), # offset index
+        IdOffsetRange(1:1000, 4), # offset index
         IdOffsetRange(ZeroBasedUnitRange(1:1000), 1), # 1-based index
         IdOffsetRange(ZeroBasedUnitRange(1:1000), 2), # offset index
         IdentityUnitRange(ZeroBasedUnitRange(1:1000)), # 1-based index
+        IdentityUnitRange(5:1000), # offset index
         ZeroBasedUnitRange(1:1000), # offset index
         ZeroBasedRange(1:1000), # offset index
         ZeroBasedRange(1:1:1000), # offset index
@@ -1029,6 +1058,11 @@ end
             ]
 
             test_indexing_axes_and_vals(r1, r2)
+
+            # This might not hold for all ranges, but holds for the known ones being tested here
+            if r1 isa AbstractUnitRange{<:Integer} && r2 isa AbstractUnitRange{<:Integer}
+                @test r1[r2] isa AbstractUnitRange{<:Integer}
+            end
         end
     end
 end

@@ -13,17 +13,17 @@ _offset(axparent::AbstractUnitRange, ax::Integer) = 1 - first(axparent)
 """
     OffsetArrays.AxisConversionStyle(typeof(indices))
 
-`AxisConversionStyle` declares if `indices` should be converted to a single `AbstractUnitRange{Int}` 
-or to a `Tuple{Vararg{AbstractUnitRange{Int}}}` while flattening custom types into indices. 
-This method is called after `to_indices(A::Array, axes(A), indices)` to provide 
+`AxisConversionStyle` declares if `indices` should be converted to a single `AbstractUnitRange{Int}`
+or to a `Tuple{Vararg{AbstractUnitRange{Int}}}` while flattening custom types into indices.
+This method is called after `to_indices(A::Array, axes(A), indices)` to provide
 further information in case `to_indices` does not return a `Tuple` of `AbstractUnitRange{Int}`.
 
-Custom index types should extend `AxisConversionStyle` and return either `OffsetArray.SingleRange()`, 
-which is the default, or `OffsetArray.TupleOfRanges()`. In the former case, the type `T` should 
-define `Base.convert(::Type{AbstractUnitRange{Int}}, ::T)`, whereas in the latter it should define 
-`Base.convert(::Type{Tuple{Vararg{AbstractUnitRange{Int}}}}, ::T)`. 
+Custom index types should extend `AxisConversionStyle` and return either `OffsetArray.SingleRange()`,
+which is the default, or `OffsetArray.TupleOfRanges()`. In the former case, the type `T` should
+define `Base.convert(::Type{AbstractUnitRange{Int}}, ::T)`, whereas in the latter it should define
+`Base.convert(::Type{Tuple{Vararg{AbstractUnitRange{Int}}}}, ::T)`.
 
-An example of the latter is `CartesianIndices`, which is converted to a `Tuple` of 
+An example of the latter is `CartesianIndices`, which is converted to a `Tuple` of
 `AbstractUnitRange{Int}` while flattening the indices.
 
 # Example
@@ -72,10 +72,12 @@ function _checkindices(N::Integer, indices, label)
     N == length(indices) || throw_argumenterror(N, indices, label)
 end
 
-_maybewrapaxes(A::AbstractVector, ::Base.OneTo) = no_offset_view(A)
-_maybewrapaxes(A::AbstractVector, ax) = OffsetArray(A, ax)
-
-_maybewrapoffset(r::AbstractUnitRange, of, ::Base.OneTo) = no_offset_view(r)
-_maybewrapoffset(r::AbstractVector, of, ::Base.OneTo) = no_offset_view(r)
-_maybewrapoffset(r::AbstractUnitRange, of, ::Any) = IdOffsetRange(UnitRange(r), of)
-_maybewrapoffset(r::AbstractVector, of, axs) = OffsetArray(r .+ of, axs)
+@inline _maybewrapoffset(r::AbstractUnitRange{<:Integer}, ::Base.OneTo) = no_offset_view(r)
+@inline _maybewrapoffset(r::AbstractVector, ::Base.OneTo) = no_offset_view(r)
+@inline function _maybewrapoffset(r::AbstractUnitRange{<:Integer}, ax)
+	of = first(ax) - 1
+	# UnitRange(a - of, b - of) is a simpler operation than UnitRange(a, b) .- of
+    # This might permit compiler optimizations
+	IdOffsetRange(UnitRange(first(r) - of, last(r) - of), of)
+end
+@inline _maybewrapoffset(r::AbstractVector, ax) = OffsetArray(r, ax)
