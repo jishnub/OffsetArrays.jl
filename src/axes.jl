@@ -144,6 +144,7 @@ offset_coerce(::Type{I}, r::AbstractUnitRange) where I<:AbstractUnitRange =
 @inline Base.axes1(r::IdOffsetRange) = IdOffsetRange(Base.axes1(r.parent), r.offset)
 @inline Base.unsafe_indices(r::IdOffsetRange) = (Base.axes1(r),)
 @inline Base.length(r::IdOffsetRange) = length(r.parent)
+@inline Base.isempty(r::IdOffsetRange) = isempty(r.parent)
 Base.reduced_index(i::IdOffsetRange) = typeof(i)(first(i):first(i))
 # Workaround for #92 on Julia < 1.4
 Base.reduced_index(i::IdentityUnitRange{<:IdOffsetRange}) = typeof(i)(first(i):first(i))
@@ -151,16 +152,7 @@ for f in [:firstindex, :lastindex, :first, :last]
     @eval @inline Base.$f(r::IdOffsetRange) = $f(r.parent) + r.offset
 end
 
-@inline function Base.iterate(r::IdOffsetRange)
-    ret = iterate(r.parent)
-    ret === nothing && return nothing
-    return (ret[1] + r.offset, ret[2])
-end
-@inline function Base.iterate(r::IdOffsetRange, i)
-    ret = iterate(r.parent, i)
-    ret === nothing && return nothing
-    return (ret[1] + r.offset, ret[2])
-end
+@inline Base.iterate(r::IdOffsetRange, i...) = iterate(UnitRange(r), i...)
 
 @propagate_inbounds Base.getindex(r::IdOffsetRange, i::Integer) = r.parent[i - r.offset] + r.offset
 @propagate_inbounds function Base.getindex(r::IdOffsetRange, s::AbstractUnitRange{<:Integer})

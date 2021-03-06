@@ -245,6 +245,15 @@ end
     @test typeof(rred) == typeof(r)
     @test length(rred) == 1
     @test first(rred) == first(r)
+
+    @testset "iteration" begin
+        A = ones(4:10)
+        ax = axes(A, 1)
+        ind, st = iterate(ax)
+        @test A[ind] == A[4]
+        ind, st = iterate(ax, st)
+        @test A[ind] == A[5]
+    end
 end
 
 # used in testing the constructor
