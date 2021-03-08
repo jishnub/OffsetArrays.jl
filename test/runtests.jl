@@ -1306,6 +1306,19 @@ end
     @test isa(B, OffsetArray{Int, 2})
     @test axes(B) == (0:0, 1:3)
 
+    # test for similar(::OffsetArray)
+    d = Diagonal(1:4)
+    od = OffsetArray(d, 2, 3)
+    od2 = similar(od)
+    @test od2 isa OffsetMatrix{Int}
+    @test parent(od2) isa Diagonal
+    @test axes(od2) == axes(od)
+    # test for similar(::OffsetArray, T)
+    od2 = similar(od, Float64)
+    @test od2 isa OffsetMatrix{Float64}
+    @test axes(od2) == axes(od)
+    @test parent(od2) isa Diagonal
+
     @test_throws MethodError similar(A, (:,))
     @test_throws MethodError similar(A, (: ,:))
     @test_throws MethodError similar(A, (: ,2))
