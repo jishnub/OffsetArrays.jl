@@ -11,7 +11,7 @@ _maybeparent(r::IdOffsetRange) = parent(r)
 _maybeparent(r) = r
 
 _offset(axparent::AbstractUnitRange, ax::AbstractUnitRange) = first(ax) - first(axparent)
-_offset(axparent::AbstractUnitRange, ax::Integer) = 1 - first(axparent)
+_offset(axparent::AbstractUnitRange, ::Union{Integer, Colon}) = 1 - first(axparent)
 
 """
     OffsetArrays.AxisConversionStyle(typeof(indices))
