@@ -313,7 +313,7 @@ end
             @test r[s] == collect(r)[s]
 
             s = StepRange(true, 2, true)
-            @test r[s] == 1:2:1
+            @test r[s] == 1:1:1
             @test r[s] == collect(r)[s]
 
             s = StepRange(false, 1, false)
@@ -321,7 +321,7 @@ end
             @test r[s] == collect(r)[s]
 
             s = StepRange(false, 2, false)
-            @test r[s] == 1:2:0
+            @test r[s] == 1:1:0
             @test r[s] == collect(r)[s]
 
             @test_throws BoundsError r[true:true:false]
