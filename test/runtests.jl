@@ -48,7 +48,7 @@ for Z in [:ZeroBasedRange, :ZeroBasedUnitRange]
     @eval Base.length(A::$Z) = length(A.a)
     @eval Base.last(A::$Z) = last(A.a)
     @eval Base.size(A::$Z) = size(A.a)
-    @eval Base.axes(A::$Z) = map(x -> 0:x-1, size(A.a))
+    @eval Base.axes(A::$Z) = map(x -> IdentityUnitRange(0:x-1), size(A.a))
     @eval Base.getindex(A::$Z, i::Int) = A.a[i + 1]
     @eval Base.step(A::$Z) = step(A.a)
     @eval OffsetArrays.no_offset_view(A::$Z) = A.a
@@ -352,6 +352,19 @@ end
             @test_throws BoundsError r[false:true:false]
         end
     end
+
+    @testset "conversion to AbstractUnitRange" begin
+        r = IdOffsetRange(1:2)
+        @test AbstractUnitRange{Int}(r) === r
+        r2 = IdOffsetRange(big(1):big(2))
+        @test AbstractUnitRange{Int}(r2) === r
+        @test AbstractUnitRange{BigInt}(r2) === r2
+
+        if v"1.5" < VERSION
+            @test OrdinalRange{Int,Int}(r2) === r
+            @test OrdinalRange{BigInt,BigInt}(r2) === r2
+        end
+    end
 end
 
 # used in testing the constructor
@@ -502,12 +515,20 @@ Base.convert(::Type{Int}, a::WeirdInteger) = a
         @test_throws OverflowError OffsetArray(ao, (-2, )) # convinient constructor accumulate offsets
         @test_throws OverflowError OffsetVector(1:0, typemax(Int))
         @test_throws OverflowError OffsetVector(OffsetVector(1:0, 0), typemax(Int))
+        @test_throws OverflowError OffsetArray(zeros(Int, typemax(Int):typemax(Int)), 2)
 
         @testset "OffsetRange" begin
-            local r = 1:100
-            local a = OffsetVector(r, 4)
-            @test first(r) in a
-            @test !(last(r) + 1 in a)
+            for r in Any[1:100, big(1):big(2)]
+                a = OffsetVector(r, 4)
+                @test first(r) in a
+                @test !(last(r) + 1 in a)
+            end
+
+            @testset "BigInt axes" begin
+                r = OffsetArray(1:big(2)^65, 4000)
+                @test eltype(r) === BigInt
+                @test axes(r, 1) == (big(1):big(2)^65) .+ 4000
+            end
         end
 
         # disallow OffsetVector(::Array{<:Any, N}, offsets) where N != 1
@@ -872,6 +893,12 @@ end
     @test eachindex(IndexLinear(), S) == eachindex(IndexLinear(), A0)
     A = ones(5:6)
     @test eachindex(IndexLinear(), A) === axes(A, 1)
+
+    A = OffsetArray(big(1):big(2), 1)
+    B = OffsetArray(1:2, 1)
+    @test CartesianIndices(A) == CartesianIndices(B)
+    @test LinearIndices(A) == LinearIndices(B)
+    @test eachindex(A) == eachindex(B)
 end
 
 @testset "Scalar indexing" begin
@@ -1190,6 +1217,13 @@ end
             end
         end
     end
+end
+
+@testset "LinearIndexing" begin
+    r = OffsetArray(ZeroBasedRange(3:4), 1);
+    @test LinearIndices(r) == axes(r,1)
+    r = OffsetArray(ZeroBasedRange(3:4), 2);
+    @test LinearIndices(r) == axes(r,1)
 end
 
 @testset "CartesianIndexing" begin

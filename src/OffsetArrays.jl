@@ -136,7 +136,9 @@ Type alias and convenience constructor for two-dimensional [`OffsetArray`](@ref)
 const OffsetMatrix{T,AA<:AbstractMatrix{T}} = OffsetArray{T,2,AA}
 
 # checks if the offset may be added to the range without overflowing
-function overflow_check(r::AbstractUnitRange{T}, offset::T) where T<:Integer
+function overflow_check(r::AbstractUnitRange{T}, offset::Integer) where {T<:Integer}
+    Base.hastypemax(T) || return nothing
+
     # This gives some performance boost https://github.com/JuliaLang/julia/issues/33273
     throw_upper_overflow_error(val) = throw(OverflowError("offset should be <= $(typemax(T) - val) corresponding to the axis $r, received an offset $offset"))
     throw_lower_overflow_error(val) = throw(OverflowError("offset should be >= $(typemin(T) - val) corresponding to the axis $r, received an offset $offset"))
@@ -153,13 +155,14 @@ function overflow_check(r::AbstractUnitRange{T}, offset::T) where T<:Integer
     return nothing
 end
 # checks if the two offsets may be added together without overflowing
-function overflow_check(offset1::T, offset2::T) where {T<:Integer}
-    throw_upper_overflow_error() = throw(OverflowError("offset should be <= $(typemax(eltype(offset1)) - offset1) given a pre-existing offset of $offset1, received an offset $offset2"))
-    throw_lower_overflow_error() = throw(OverflowError("offset should be >= $(typemin(eltype(offset1)) - offset1) given a pre-existing offset of $offset1, received an offset $offset2"))
+function overflow_check(offset_preexisting::Integer, offset_new::T) where {T<:Integer}
+    Base.hastypemax(T) || return nothing
+    throw_upper_overflow_error() = throw(OverflowError("offset should be <= $(typemax(eltype(offset_preexisting)) - offset_preexisting) given a pre-existing offset of $offset_preexisting, received an offset $offset_new"))
+    throw_lower_overflow_error() = throw(OverflowError("offset should be >= $(typemin(eltype(offset_preexisting)) - offset_preexisting) given a pre-existing offset of $offset_preexisting, received an offset $offset_new"))
 
-    if offset1 > 0 && offset2 > typemax(T) - offset1
+    if offset_preexisting > 0 && offset_new > typemax(T) - offset_preexisting
         throw_upper_overflow_error()
-    elseif offset1 < 0 && offset2 < typemin(T) - offset1
+    elseif offset_preexisting < 0 && offset_new < typemin(T) - offset_preexisting
         throw_lower_overflow_error()
     end
     return nothing
@@ -466,9 +469,6 @@ for OR in [:IIUR, :IdOffsetRange]
         _maybewrapoffset(pr, axes(s,1))
     end
 end
-
-# This is technically breaking, so it might be incorporated in the next major release
-# Base.getindex(a::OffsetRange, ::Colon) = OffsetArray(a.parent[:], a.offsets)
 
 # mapreduce is faster with an IdOffsetRange than with an OffsetUnitRange
 # We therefore convert OffsetUnitRanges to IdOffsetRanges with the same values and axes
