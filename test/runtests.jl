@@ -365,6 +365,24 @@ end
             @test OrdinalRange{BigInt,BigInt}(r2) === r2
         end
     end
+    @testset "iteration" begin
+        # parent has Base.OneTo axes
+        A = ones(4:10)
+        ax = axes(A, 1)
+        ind, st = iterate(ax)
+        @test A[ind] == A[4]
+        ind, st = iterate(ax, st)
+        @test A[ind] == A[5]
+
+        # parent doesn't have Base.OneTo axes
+        B = @view A[:]
+        C = OffsetArray(B, 0)
+        ax = axes(C, 1)
+        ind, st = iterate(ax)
+        @test C[ind] == C[4]
+        ind, st = iterate(ax, st)
+        @test C[ind] == C[5]
+    end
 end
 
 # used in testing the constructor

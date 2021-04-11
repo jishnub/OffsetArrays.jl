@@ -180,6 +180,14 @@ for f in [:first, :last]
     @eval @inline Base.$f(r::IdOffsetRange) = eltype(r)($f(r.parent) + r.offset)
 end
 
+Base.iterate(r::IdOffsetRange, i...) = _iterate(r, i...)
+@inline function _iterate(r::IdOffsetRange, i...)
+    ret = iterate(r.parent, i...)
+    ret === nothing && return nothing
+    return (ret[1] + r.offset, ret[2])
+end
+@inline _iterate(r::IdOffsetRange{<:Integer, <:Base.OneTo}, i...) = iterate(r.parent .+ r.offset, i...)
+
 @inline Base.iterate(r::IdOffsetRange, i...) = iterate(UnitRange(r), i...)
 
 @inline function Base.getindex(r::IdOffsetRange, i::Integer)
