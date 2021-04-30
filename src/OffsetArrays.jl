@@ -115,10 +115,15 @@ struct OffsetArray{T,N,AA<:AbstractArray{T,N}} <: AbstractArray{T,N}
         map(overflow_check, axes(parent), offsets)
         new{T, N, AA}(parent, offsets)
     end
+    function OffsetArray{T, N, AA}(parent::AA, offsets::NTuple{N, Int}) where {T, N, AA<:OffsetArray{T,N}}
+        # allocation of `map` on tuple is optimized away
+        map(overflow_check, axes(parent), offsets)
+        new{T, N, AA}(parent, offsets)
+    end
 end
 
 function OffsetArray{T, N, AA}(parent::AA, offsets::NTuple{N, Integer}) where {T, N, AA<:AbstractArray{T,N}}
-    OffsetArray{T, N, AA}(parent, map(x -> convert(Int, x)::Int, offsets))
+    OffsetArray{T, N, AA}(parent, map(Int, offsets)::NTuple{N,Int})
 end
 
 """
@@ -186,6 +191,9 @@ for (FT, ND) in ((:OffsetVector, :1), (:OffsetMatrix, :2))
     @eval @inline function $FT(A::AbstractArray, offsets::Tuple{Vararg{Integer}})
         throw(ArgumentError($FTstr*" requires a "*string($ND)*"D array"))
     end
+    @eval @inline $FT{T}(A::AbstractArray{<:Any,$ND}) where {T} = $FT{T}(_of_eltype(T, A), ntuple(zero, Val($ND)))
+    @eval @inline $FT{T}(A::AbstractArray{<:Any,$ND}, inds::Vararg) where {T} = $FT{T}(A, inds)
+    @eval @inline $FT{T}(A::AbstractArray{<:Any,$ND}, inds::Tuple) where {T} = $FT(_of_eltype(T, A), inds)
 end
 
 ## OffsetArray constructors
@@ -220,9 +228,29 @@ for FT in (:OffsetArray, :OffsetVector, :OffsetMatrix)
     end
 
     @eval @inline $FT(A::AbstractArray, inds::Vararg) = $FT(A, inds)
+    @eval @inline $FT(A::AbstractArray) = $FT(A, ntuple(zero, Val(ndims(A))))
 
     @eval @inline $FT(A::AbstractArray, origin::Origin) = $FT(A, origin(A))
 end
+
+# conversion-related methods
+OffsetArray{T}(M::AbstractArray) where {T} = OffsetArray(_of_eltype(T, M))
+OffsetArray{T}(M::AbstractArray, I::Vararg) where {T} = OffsetArray{T}(M, I)
+OffsetArray{T}(M::AbstractArray, I::Tuple) where {T} = OffsetArray(_of_eltype(T, M), I)
+
+OffsetArray{T,N}(M::AbstractArray{<:Any,N}) where {T,N} = OffsetArray(_of_eltype(T, M))
+OffsetArray{T,N}(M::AbstractArray{<:Any,N}, I::Vararg) where {T,N} = OffsetArray{T,N}(M, I)
+OffsetArray{T,N}(M::AbstractArray{<:Any,N}, I::Tuple) where {T,N} = OffsetArray(_of_eltype(T, M), I)
+
+OffsetArray{T,N,A}(M::AbstractArray{<:Any,N}, I::Vararg) where {T,N,A<:AbstractArray{T,N}} = OffsetArray{T,N,A}(M, I)
+OffsetArray{T,N,A}(M::AbstractArray{<:Any,N}, I::Tuple) where {T,N,A<:AbstractArray{T,N}} = OffsetArray(convert(A, M)::A, I)
+OffsetArray{T,N,A}(M::AbstractArray{<:Any,N}) where {T,N,A<:AbstractArray{T,N}} = OffsetArray{T,N,A}(convert(A, M)::A, ntuple(zero, Val(N)))
+
+# Operations on OffsetArrays may pass the conversion to the parent
+OffsetArray{T,N,A}(M::OffsetArray{<:Any,N}) where {T,N,A<:AbstractArray{T,N}} = OffsetArray{T,N,A}(M, ntuple(zero, Val(N)))
+OffsetArray{T,N,A}(M::OffsetArray{<:Any,N}, I::NTuple{N,Int}) where {T,N,A<:AbstractArray{T,N}} = OffsetArray(OffsetArray(convert(A, parent(M))::A, M.offsets), I)
+
+Base.convert(::Type{T}, M::AbstractArray) where {T<:OffsetArray} = M isa T ? M : T(M)
 
 # array initialization
 @inline function OffsetArray{T,N}(init::ArrayInitializer, inds::Tuple{Vararg{OffsetAxisKnownLength}}) where {T,N}
@@ -424,9 +452,11 @@ end
 
 # avoid hitting the slow method getindex(::Array, ::AbstractRange{Int})
 # instead use the faster getindex(::Array, ::UnitRange{Int})
-@propagate_inbounds function Base.getindex(A::Array, r::Union{IdOffsetRange, IIUR})
-    B = A[_contiguousindexingtype(r)]
-    _maybewrapoffset(B, axes(r))
+if VERSION <= v"1.7.0-DEV.1039"
+    @propagate_inbounds function Base.getindex(A::Array, r::Union{IdOffsetRange, IIUR})
+        B = A[_contiguousindexingtype(r)]
+        _maybewrapoffset(B, axes(r))
+    end
 end
 
 # Linear Indexing of OffsetArrays with AbstractUnitRanges may use the faster contiguous indexing methods

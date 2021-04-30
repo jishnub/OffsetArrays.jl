@@ -404,7 +404,7 @@ struct WeirdInteger{T} <: Integer
     x :: T
 end
 # assume that it doesn't behave as expected
-Base.convert(::Type{Int}, a::WeirdInteger) = a
+Base.Int(a::WeirdInteger) = a
 
 @testset "Constructors" begin
     @testset "Single-entry arrays in dims 0:5" begin
@@ -2240,6 +2240,101 @@ end
         @test pointer(a', 5) === pointer(parent(a), 5)
         @test pointer(A', 15) === pointer(parent(A)', 15)
     end
+end
+
+# issue 171
+struct Foo2
+    o::OffsetArray{Float64,1,Array{Float64,1}}
+end
+
+@testset "convert" begin
+    d = Diagonal([1,1,1])
+    M = convert(Matrix{Float64}, d)
+    od = OffsetArray(d, 1, 1)
+    oM = convert(OffsetMatrix{Float64, Matrix{Float64}}, od)
+    @test eltype(oM) == Float64
+    @test typeof(parent(oM)) == Matrix{Float64}
+    @test oM == od
+    oM2 = convert(OffsetMatrix{Float64, Matrix{Float64}}, d)
+    @test eltype(oM2) == Float64
+    @test typeof(parent(oM2)) == Matrix{Float64}
+    @test oM2 == d
+
+    # issue 171
+    O = zeros(Int, 0:2)
+    F = Foo2(O)
+    @test F.o == O
+
+    a = [MMatrix{2,2}(1:4) for i = 1:2]
+    oa = [OffsetArray(ai, 0, 0) for ai in a]
+    b = ones(2,2)
+    @test b * a == b * oa
+
+    for a = [1:4, ones(1:5)]
+        @test convert(OffsetArray, a) isa OffsetArray
+        @test convert(OffsetArray, a) == a
+        @test convert(OffsetArray{eltype(a)}, a) isa OffsetArray{eltype(a)}
+        @test convert(OffsetArray{eltype(a)}, a) == a
+        @test convert(OffsetArray{Float32}, a) isa OffsetArray{Float32}
+        @test convert(OffsetArray{Float32}, a) == a
+        @test convert(OffsetArray{eltype(a),1}, a) isa OffsetArray{eltype(a),1}
+        @test convert(OffsetArray{eltype(a),1}, a) == a
+        @test convert(OffsetArray{Float32,1}, a) isa OffsetArray{Float32,1}
+        @test convert(OffsetArray{Float32,1}, a) == a
+        @test convert(OffsetVector, a) isa OffsetVector
+        @test convert(OffsetVector, a) == a
+        @test convert(OffsetVector{Float32}, a) isa OffsetVector{Float32}
+        @test convert(OffsetVector{Float32}, a) == a
+
+        for T in [OffsetArray{Float32}, OffsetArray{Float32, 1}, OffsetArray{Float32, 1, Vector{Float32}},
+            OffsetVector{Float32}, OffsetVector{Float32, Vector{Float32}}]
+            b = T(a, 0)
+            @test b isa T
+            @test b == a
+            b = T(a)
+            @test b isa T
+            @test b == a
+        end
+        a2 = reshape(a, :, 1)
+        for T in [OffsetArray{Float32}, OffsetArray{Float32, 2}, OffsetArray{Float32, 2, Matrix{Float32}},
+            OffsetMatrix{Float32}, OffsetMatrix{Float32, Matrix{Float32}}]
+            b = T(a2, 0, 0)
+            @test b isa T
+            @test b == a2
+            b = T(a2, 1, 1)
+            @test axes(b) == map((x,y) -> x .+ y, axes(a2), (1,1))
+            b = T(a2)
+            @test b isa T
+            @test b == a2
+        end
+        a2 = reshape(a, :, 1, 1)
+        for T in [OffsetArray{Float32}, OffsetArray{Float32, 3}, OffsetArray{Float32, 3, Array{Float32,3}}]
+            b = T(a2, 0, 0, 0)
+            @test b isa T
+            @test b == a2
+            b = T(a2, 1, 1, 1)
+            @test axes(b) == map((x,y) -> x .+ y, axes(a2), (1,1,1))
+            b = T(a2)
+            @test b isa T
+            @test b == a2
+        end
+    end
+
+    a = ones(2:3)
+    b = convert(OffsetArray, a)
+    @test a === b
+    b = convert(OffsetVector, a)
+    @test a === b
+
+    # test that non-Int offsets work correctly if the parent is an OffsetArray
+    b1 = OffsetArray{Float64, 1, typeof(a)}(a, (-1,))
+    b2 = OffsetArray{Float64, 1, typeof(a)}(a, (-big(1),))
+    @test b1 == b2
+
+    # changing the number of dimensions is not permitted
+    A = rand(2,2)
+    @test_throws MethodError convert(OffsetArray{Float64, 3}, A)
+    @test_throws MethodError convert(OffsetArray{Float64, 3, Array{Float64,3}}, A)
 end
 
 include("origin.jl")
