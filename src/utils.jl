@@ -7,8 +7,8 @@ _indexlength(r::AbstractRange) = length(r)
 _indexlength(i::Integer) = i
 _indexlength(i::Colon) = Colon()
 
-_maybeparent(r::IdOffsetRange) = parent(r)
-_maybeparent(r) = r
+_strip_IdOffsetRange(r::IdOffsetRange) = parent(r)
+_strip_IdOffsetRange(r) = r
 
 _offset(axparent::AbstractUnitRange, ax::AbstractUnitRange) = first(ax) - first(axparent)
 _offset(axparent::AbstractUnitRange, ::Union{Integer, Colon}) = 1 - first(axparent)
@@ -75,12 +75,23 @@ function _checkindices(N::Integer, indices, label)
     N == length(indices) || throw_argumenterror(N, indices, label)
 end
 
+@inline _maybewrapoffset(r::AbstractVector, ax::Tuple{Any}) = _maybewrapoffset(r, ax[1])
 @inline _maybewrapoffset(r::AbstractUnitRange{<:Integer}, ::Base.OneTo) = no_offset_view(r)
 @inline _maybewrapoffset(r::AbstractVector, ::Base.OneTo) = no_offset_view(r)
-@inline function _maybewrapoffset(r::AbstractUnitRange{<:Integer}, ax)
+@inline function _maybewrapoffset(r::AbstractUnitRange{<:Integer}, ax::AbstractUnitRange)
 	of = first(ax) - 1
-	# UnitRange(a - of, b - of) is a simpler operation than UnitRange(a, b) .- of
-    # This might permit compiler optimizations
-	IdOffsetRange(UnitRange(first(r) - of, last(r) - of), of)
+	IdOffsetRange(_subtractoffset(r, of), of)
 end
-@inline _maybewrapoffset(r::AbstractVector, ax) = OffsetArray(r, ax)
+@inline _maybewrapoffset(r::AbstractVector, ax::AbstractUnitRange) = OffsetArray(r, ax)
+
+# These functions are equivalent to the broadcasted operation r .- of
+# However these ensure that the result is an AbstractRange even if a specific
+# broadcasting behavior is not defined for a custom type
+_subtractoffset(r::AbstractUnitRange, of) = UnitRange(first(r) - of, last(r) - of)
+_subtractoffset(r::AbstractRange, of) = range(first(r) - of, stop = last(r) - of, step = step(r))
+
+if VERSION <= v"1.7.0-DEV.1039"
+    _contiguousindexingtype(r::AbstractUnitRange{<:Integer}) = UnitRange{Int}(r)
+else
+    _contiguousindexingtype(r::AbstractUnitRange{<:Integer}) = r
+end
