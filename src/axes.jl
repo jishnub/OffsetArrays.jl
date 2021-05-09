@@ -78,12 +78,7 @@ struct IdOffsetRange{T<:Integer,I<:AbstractUnitRange{T}} <: AbstractUnitRange{T}
     offset::T
 
     function IdOffsetRange{T,I}(r::I, offset::T) where {T<:Integer,I<:AbstractUnitRange{T}}
-        if T === Bool
-            # disallow the construction of IdOffsetRange{Bool, UnitRange{Bool}}(true:true, true)
-            if offset && (first(r) || last(r))
-                throw(ArgumentError("values = $r and offset = $offset can not produce a boolean range"))
-            end
-        end
+        _bool_check(T, r, offset)
         new{T,I}(r, offset)
     end
 
@@ -92,15 +87,19 @@ struct IdOffsetRange{T<:Integer,I<:AbstractUnitRange{T}} <: AbstractUnitRange{T}
     so it ends up calling itself if I <: IdOffsetRange.
     =#
     function IdOffsetRange{T,IdOffsetRange{T,I}}(r::IdOffsetRange{T,I}, offset::T) where {T<:Integer,I<:AbstractUnitRange{T}}
-        if T === Bool
-            # disallow the construction of IdOffsetRange{Bool, IdOffsetRange{Bool, UnitRange{Bool}}}(IdOffsetRange(true:true), true)
-            if offset && (first(r) || last(r))
-                throw(ArgumentError("values = $r and offset = $offset can not produce a boolean range"))
-            end
-        end
+        _bool_check(T, r, offset)
         new{T,IdOffsetRange{T,I}}(r, offset)
     end
 end
+
+function _bool_check(::Type{Bool}, r, offset)
+    # disallow the construction of IdOffsetRange{Bool, UnitRange{Bool}}(true:true, true)
+    if offset && (first(r) || last(r))
+        throw(ArgumentError("values = $r and offset = $offset can not produce a boolean range"))
+    end
+    return nothing
+end
+_bool_check(::Type, r, offset) = nothing
 
 # Construction/coercion from arbitrary AbstractUnitRanges
 function IdOffsetRange{T,I}(r::AbstractUnitRange, offset::Integer = 0) where {T<:Integer,I<:AbstractUnitRange{T}}
@@ -184,7 +183,7 @@ Base.iterate(r::IdOffsetRange, i...) = _iterate(r, i...)
 @inline function _iterate(r::IdOffsetRange, i...)
     ret = iterate(r.parent, i...)
     ret === nothing && return nothing
-    return (ret[1] + r.offset, ret[2])
+    return (eltype(r)(ret[1] + r.offset), ret[2])
 end
 @inline _iterate(r::IdOffsetRange{<:Integer, <:Base.OneTo}, i...) = iterate(r.parent .+ r.offset, i...)
 
@@ -193,51 +192,38 @@ end
 @inline function Base.getindex(r::IdOffsetRange, i::Integer)
     i isa Bool && throw(ArgumentError("invalid index: $i of type Bool"))
     @boundscheck checkbounds(r, i)
-    eltype(r)(@inbounds r.parent[i - r.offset] + r.offset)
+    @inbounds eltype(r)(r.parent[i - r.offset] + r.offset)
 end
+
 # Logical indexing following https://github.com/JuliaLang/julia/pull/31829
-@inline function Base.getindex(r::IdOffsetRange, s::AbstractUnitRange{<:Integer})
-    @boundscheck checkbounds(r, s)
-    if eltype(s) === Bool
-        # Use logical indexing
-        rs = if length(s) == 0 # true:false
-            UnitRange(r)
-        elseif length(s) == 1 # true:true or false:false
-            if first(s) # true:true
-                UnitRange(r)
-            else # false:false
-                UnitRange(range(first(r), length = 0))
-            end
-        else # length(s) == 2 (false:true)
-            f = first(r)
-            UnitRange(range(f + one(f), length = 1))
-        end
-        return _maybewrapoffset(rs, axes(s,1))
-    else
-        @inbounds pr = r.parent[s .- r.offset] .+ r.offset
-        return _maybewrapoffset(pr, axes(s,1))
-    end
+#= Helper function to perform logical indxeing for boolean ranges
+The code implemented is a branch-free version of the following:
+
+    range(first(s) ? first(r) : last(r), length=Int(last(s)))
+
+See https://github.com/JuliaArrays/OffsetArrays.jl/pull/224#discussion_r595635143
+
+Logical indexing does not preserve indices, unlike other forms of vector indexing
+=#
+@inline function _getindex(r, s::AbstractUnitRange{Bool})
+    range(first(r) * first(s) + last(r) * !first(s), length=Int(last(s)))
 end
-# The following method is required to avoid falling back to getindex(::AbstractUnitRange, ::StepRange{<:Integer})
-@inline function Base.getindex(r::IdOffsetRange, s::StepRange{<:Integer})
-    @boundscheck checkbounds(r, s)
-    if eltype(s) === Bool
-        # Use logical indexing
-        rs = if length(s) == 0 # eg. true:true:false
-            range(first(r), step = step(s), length = 0)
-        elseif length(s) == 1 # eg. true:true:true or false:true:false
-            if first(s) # eg. true:true:true
-                range(first(r), step = step(s), length = 1)
-            else # eg. false:true:false
-                range(first(r), step = step(s), length = 0)
-            end
-        else # length(s) == 2 (eg. false:true:true)
-            range(first(r) + step(r), step = step(s), length = 1)
-        end
-        return no_offset_view(rs)
-    else
-        @inbounds rs = r.parent[s .- r.offset] .+ r.offset
-        return no_offset_view(rs)
+@inline function _getindex(r, s::StepRange{Bool})
+    range(first(r) * first(s) + last(r) * !first(s), step = oneunit(step(s)), length=Int(last(s)))
+end
+@inline function _getindex(r, s::AbstractUnitRange)
+    @inbounds rs = r.parent[_subtractoffset(s, r.offset)] .+ r.offset
+    _indexedby(rs, axes(s))
+end
+@inline function _getindex(r, s::StepRange)
+    rs = @inbounds r.parent[s .- r.offset] .+ r.offset
+    _indexedby(rs, axes(s))
+end
+
+for T in [:AbstractUnitRange, :StepRange]
+    @eval @inline function Base.getindex(r::IdOffsetRange, s::$T{<:Integer})
+        @boundscheck checkbounds(r, s)
+        return _getindex(r, s)
     end
 end
 

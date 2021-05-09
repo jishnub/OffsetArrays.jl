@@ -63,24 +63,19 @@ for Z in [:ZeroBasedRange, :ZeroBasedUnitRange]
     for R in [:AbstractRange, :AbstractUnitRange, :StepRange]
         @eval @inline function Base.getindex(A::$Z, r::$R{<:Integer})
             @boundscheck checkbounds(A, r)
-            OffsetArrays._maybewrapoffset(A.a[r .+ 1], axes(r))
+            OffsetArrays._indexedby(A.a[r .+ 1], axes(r))
         end
     end
     for R in [:UnitRange, :StepRange, :StepRangeLen, :LinRange]
         @eval @inline function Base.getindex(A::$R, r::$Z)
             @boundscheck checkbounds(A, r)
-            OffsetArrays._maybewrapoffset(A[r.a], axes(r))
+            OffsetArrays._indexedby(A[r.a], axes(r))
         end
     end
     @eval @inline function Base.getindex(A::StepRangeLen{<:Any,<:Base.TwicePrecision,<:Base.TwicePrecision}, r::$Z)
         @boundscheck checkbounds(A, r)
-        OffsetArrays._maybewrapoffset(A[r.a], axes(r))
+        OffsetArrays._indexedby(A[r.a], axes(r))
     end
-end
-
-Base.@propagate_inbounds function Base.getindex(A::Array, r::ZeroBasedUnitRange)
-    B = A[parent(r)]
-    OffsetArrays._maybewrapoffset(B, axes(r))
 end
 
 function same_value(r1, r2)
@@ -379,6 +374,7 @@ end
             @test OrdinalRange{BigInt,BigInt}(r2) === r2
         end
     end
+
     @testset "iteration" begin
         # parent has Base.OneTo axes
         A = ones(4:10)
@@ -396,6 +392,130 @@ end
         @test C[ind] == C[4]
         ind, st = iterate(ax, st)
         @test C[ind] == C[5]
+    end
+
+    @testset "Bool IdOffsetRange (issue #223)" begin
+        for b1 in [false, true], b2 in [false, true]
+            r = IdOffsetRange(b1:b2)
+            @test first(r) === b1
+            @test last(r) === b2
+        end
+        @test_throws ArgumentError IdOffsetRange(true:true, true)
+        @test_throws ArgumentError IdOffsetRange{Bool,UnitRange{Bool}}(true:true, true)
+        @test_throws ArgumentError IdOffsetRange{Bool,IdOffsetRange{Bool,UnitRange{Bool}}}(IdOffsetRange(true:true), true)
+    end
+
+    @testset "Logical indexing" begin
+        @testset "indexing with a single bool" begin
+            r = IdOffsetRange(1:2)
+            @test_throws ArgumentError r[true]
+            @test_throws ArgumentError r[false]
+        end
+        @testset "indexing wtih a Bool UnitRange" begin
+            r = IdOffsetRange(1:0)
+
+            @test r[true:false] == 1:0
+            @test r[true:false] == collect(r)[true:false]
+            @test_throws BoundsError r[true:true]
+            @test_throws BoundsError r[false:false]
+            @test_throws BoundsError r[false:true]
+
+            r = IdOffsetRange(1:1)
+
+            @test r[true:true] == 1:1
+            @test r[true:true] == collect(r)[true:true]
+
+            @test r[false:false] == 1:0
+            @test r[false:false] == collect(r)[false:false]
+
+            @test_throws BoundsError r[true:false]
+            @test_throws BoundsError r[false:true]
+
+            r = IdOffsetRange(1:2)
+
+            @test r[false:true] == 2:2
+            @test r[false:true] == collect(r)[false:true]
+
+            @test_throws BoundsError r[true:true]
+            @test_throws BoundsError r[true:false]
+            @test_throws BoundsError r[false:false]
+        end
+        @testset "indexing with a Bool IdOffsetRange" begin
+            # bounds-checking requires the axes of the indices to match that of the array
+            function testlogicalindexing(r, r2)
+                r3 = r[r2];
+                @test no_offset_view(r3) == collect(r)[collect(r2)]
+            end
+
+            r = IdOffsetRange(10:9)
+            r2 = IdOffsetRange(true:false)
+            testlogicalindexing(r, r2)
+
+            r = IdOffsetRange(10:10)
+            r2 = IdOffsetRange(false:false)
+            testlogicalindexing(r, r2)
+            r2 = IdOffsetRange(true:true)
+            testlogicalindexing(r, r2)
+
+            r = IdOffsetRange(10:10, 1)
+            r2 = IdOffsetRange(false:false, 1) # effectively true:true with indices 2:2
+            testlogicalindexing(r, r2)
+
+            r = IdOffsetRange(10:11)
+            r2 = IdOffsetRange(false:true)
+            testlogicalindexing(r, r2)
+        end
+        @testset "indexing wtih a Bool StepRange" begin
+            r = IdOffsetRange(1:0)
+
+            @test r[true:true:false] == 1:1:0
+            @test_throws BoundsError r[true:true:true]
+            @test_throws BoundsError r[false:true:false]
+            @test_throws BoundsError r[false:true:true]
+
+            r = IdOffsetRange(1:1)
+
+            @test r[true:true:true] == 1:1:1
+            @test r[true:true:true] == collect(r)[true:true:true]
+            @test axes(r[true:true:true], 1) == 1:1
+
+            @test r[false:true:false] == 1:1:0
+            @test r[false:true:false] == collect(r)[false:true:false]
+
+            # StepRange{Bool,Int}
+            s = StepRange(true, 1, true)
+            @test r[s] == 1:1:1
+            @test r[s] == collect(r)[s]
+
+            s = StepRange(true, 2, true)
+            @test r[s] == 1:1:1
+            @test r[s] == collect(r)[s]
+
+            s = StepRange(false, 1, false)
+            @test r[s] == 1:1:0
+            @test r[s] == collect(r)[s]
+
+            s = StepRange(false, 2, false)
+            @test r[s] == 1:1:0
+            @test r[s] == collect(r)[s]
+
+            @test_throws BoundsError r[true:true:false]
+            @test_throws BoundsError r[false:true:true]
+
+            r = IdOffsetRange(1:2)
+
+            @test r[false:true:true] == 2:1:2
+            @test r[false:true:true] == collect(r)[false:true:true]
+
+            # StepRange{Bool,Int}
+            s = StepRange(false, 1, true)
+            @test r[s] == 2:1:2
+            @test r[s] == collect(r)[s]
+
+            @test_throws BoundsError r[true:true:true]
+            @test_throws BoundsError r[true:true:false]
+            @test_throws BoundsError r[false:true:false]
+        end
     end
 end
 
@@ -904,6 +1024,13 @@ end
     B = BidirectionalVector([1, 2, 3], -2)
     A = OffsetArray(B, -1:1)
     @test axes(A) == (IdentityUnitRange(-1:1),)
+end
+
+@testset "unwrap" begin
+    for A in [ones(2, 2), ones(2:3, 2:3), ZeroBasedRange(1:4)]
+        p, f = OffsetArrays.unwrap(A)
+        @test f(map(y -> y^2, p)) == A.^2
+    end
 end
 
 @testset "Traits" begin
@@ -1888,6 +2015,36 @@ end
     @test dest[1,7] == 2
     @test dest[1,8] == 4
     @test dest[1,9] == -2
+
+    @testset "eltype conversion" begin
+        a = OffsetArray(1:2, 1)
+        b = map(BigInt, a)
+        @test eltype(b) == BigInt
+        @test b == a
+        @test b isa OffsetArrays.OffsetRange
+
+        for ri in Any[2:3, Base.OneTo(2)]
+            for r in [IdentityUnitRange(ri), IdOffsetRange(ri), IdOffsetRange(ri, 1)]
+                for T in [Int8, Int16, Int32, Int64, Int128, BigInt, Float32, Float64, BigFloat]
+                    r2 = map(T, r)
+                    @test eltype(r2) == T
+                    @test axes(r2) == axes(r)
+                    @test all(((x,y),) -> isequal(x,y), zip(r, r2))
+                end
+            end
+        end
+
+        @testset "Bool" begin
+            for ri in Any[0:0, 0:1, 1:0, 1:1, Base.OneTo(0), Base.OneTo(1)]
+                for r = Any[IdentityUnitRange(ri), IdOffsetRange(ri), IdOffsetRange(ri .- 1, 1)]
+                    r2 = map(Bool, r)
+                    @test eltype(r2) == Bool
+                    @test axes(r2) == axes(r)
+                    @test all(((x,y),) -> isequal(x,y), zip(r, r2))
+                end
+            end
+        end
+    end
 end
 
 @testset "reductions" begin
@@ -2271,52 +2428,63 @@ end
     @test b * a == b * oa
 
     for a = [1:4, ones(1:5)]
-        @test convert(OffsetArray, a) isa OffsetArray
-        @test convert(OffsetArray, a) == a
-        @test convert(OffsetArray{eltype(a)}, a) isa OffsetArray{eltype(a)}
-        @test convert(OffsetArray{eltype(a)}, a) == a
-        @test convert(OffsetArray{Float32}, a) isa OffsetArray{Float32}
-        @test convert(OffsetArray{Float32}, a) == a
-        @test convert(OffsetArray{eltype(a),1}, a) isa OffsetArray{eltype(a),1}
-        @test convert(OffsetArray{eltype(a),1}, a) == a
-        @test convert(OffsetArray{Float32,1}, a) isa OffsetArray{Float32,1}
-        @test convert(OffsetArray{Float32,1}, a) == a
-        @test convert(OffsetVector, a) isa OffsetVector
-        @test convert(OffsetVector, a) == a
-        @test convert(OffsetVector{Float32}, a) isa OffsetVector{Float32}
-        @test convert(OffsetVector{Float32}, a) == a
+        for T in [OffsetArray, OffsetVector,
+            OffsetArray{eltype(a)}, OffsetArray{Float32},
+            OffsetVector{eltype(a)}, OffsetVector{Float32},
+            OffsetVector{Float32, Vector{Float32}},
+            OffsetVector{Float32, OffsetVector{Float32, Vector{Float32}}},
+            OffsetVector{eltype(a), typeof(a)},
+            ]
 
-        for T in [OffsetArray{Float32}, OffsetArray{Float32, 1}, OffsetArray{Float32, 1, Vector{Float32}},
-            OffsetVector{Float32}, OffsetVector{Float32, Vector{Float32}}]
-            b = T(a, 0)
-            @test b isa T
-            @test b == a
+            @test convert(T, a) isa T
+            @test convert(T, a) == a
+
             b = T(a)
             @test b isa T
             @test b == a
+
+            b = T(a, 0)
+            @test b isa T
+            @test b == a
+
+            b = T(a, axes(a))
+            @test b isa T
+            @test b == a
         end
+
         a2 = reshape(a, :, 1)
-        for T in [OffsetArray{Float32}, OffsetArray{Float32, 2}, OffsetArray{Float32, 2, Matrix{Float32}},
-            OffsetMatrix{Float32}, OffsetMatrix{Float32, Matrix{Float32}}]
+        for T in [OffsetArray{Float32}, OffsetMatrix{Float32}, OffsetArray{Float32, 2, Matrix{Float32}}]
             b = T(a2, 0, 0)
             @test b isa T
             @test b == a2
+
+            b = T(a2, axes(a2))
+            @test b isa T
+            @test b == a2
+
             b = T(a2, 1, 1)
             @test axes(b) == map((x,y) -> x .+ y, axes(a2), (1,1))
+
             b = T(a2)
             @test b isa T
             @test b == a2
         end
-        a2 = reshape(a, :, 1, 1)
+        a3 = reshape(a, :, 1, 1)
         for T in [OffsetArray{Float32}, OffsetArray{Float32, 3}, OffsetArray{Float32, 3, Array{Float32,3}}]
-            b = T(a2, 0, 0, 0)
+            b = T(a3, 0, 0, 0)
             @test b isa T
-            @test b == a2
-            b = T(a2, 1, 1, 1)
-            @test axes(b) == map((x,y) -> x .+ y, axes(a2), (1,1,1))
-            b = T(a2)
+            @test b == a3
+
+            b = T(a3, axes(a3))
             @test b isa T
-            @test b == a2
+            @test b == a3
+
+            b = T(a3, 1, 1, 1)
+            @test axes(b) == map((x,y) -> x .+ y, axes(a3), (1,1,1))
+
+            b = T(a3)
+            @test b isa T
+            @test b == a3
         end
     end
 
@@ -2326,10 +2494,52 @@ end
     b = convert(OffsetVector, a)
     @test a === b
 
-    # test that non-Int offsets work correctly if the parent is an OffsetArray
+    # test that non-Int offsets work correctly
+    a = 1:4
+    b1 = OffsetVector{Float64,Vector{Float64}}(a, 2)
+    b2 = OffsetVector{Float64,Vector{Float64}}(a, big(2))
+    @test b1 == b2
+
+    a = ones(2:3)
     b1 = OffsetArray{Float64, 1, typeof(a)}(a, (-1,))
     b2 = OffsetArray{Float64, 1, typeof(a)}(a, (-big(1),))
     @test b1 == b2
+
+    # test for custom offset arrays
+    a = ZeroBasedRange(1:3)
+    for T in [OffsetVector{Float64, UnitRange{Float64}}, OffsetVector{Int, Vector{Int}},
+        OffsetVector{Float64,OffsetVector{Float64,UnitRange{Float64}}},
+        OffsetArray{Int,1,OffsetArray{Int,1,UnitRange{Int}}},
+        ]
+
+        b = T(a)
+        @test b isa T
+        @test b == a
+
+        b = T(a, 2:4)
+        @test b isa T
+        @test axes(b, 1) == 2:4
+        @test OffsetArrays.no_offset_view(b) == OffsetArrays.no_offset_view(a)
+
+        b = T(a, 1)
+        @test b isa T
+        @test axes(b, 1) == 1:3
+        @test OffsetArrays.no_offset_view(b) == OffsetArrays.no_offset_view(a)
+
+        c = convert(T, a)
+        @test c isa T
+        @test c == a
+    end
+
+    # test using custom indices
+    a = ones(2,2)
+    for T in [OffsetMatrix{Int}, OffsetMatrix{Float64}, OffsetMatrix{Float64, Matrix{Float64}},
+        OffsetMatrix{Int, Matrix{Int}}]
+
+        b = T(a, ZeroBasedIndexing())
+        @test b isa T
+        @test axes(b) == (0:1, 0:1)
+    end
 
     # changing the number of dimensions is not permitted
     A = rand(2,2)
