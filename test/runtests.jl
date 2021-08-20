@@ -1,5 +1,6 @@
 using OffsetArrays
-using OffsetArrays: IdentityUnitRange, no_offset_view
+using OffsetArrays: IdentityUnitRange, no_offset_view, IIUR
+using Base: Slice
 using OffsetArrays: IdOffsetRange
 using Test, Aqua, Documenter
 using LinearAlgebra
@@ -9,6 +10,9 @@ using EllipsisNotation
 using Adapt
 using StaticArrays
 using FillArrays
+using DistributedArrays
+
+const SliceIntUR = Slice{<:AbstractUnitRange{<:Integer}}
 
 DocMeta.setdocmeta!(OffsetArrays, :DocTestSetup, :(using OffsetArrays); recursive=true)
 
@@ -25,58 +29,7 @@ struct TupleOfRanges{N}
     x ::NTuple{N, UnitRange{Int}}
 end
 
-# Useful for testing indexing
-struct ZeroBasedRange{T,A<:AbstractRange{T}} <: AbstractRange{T}
-    a :: A
-    function ZeroBasedRange(a::AbstractRange{T}) where {T}
-        @assert !Base.has_offset_axes(a)
-        new{T, typeof(a)}(a)
-    end
-end
-
-struct ZeroBasedUnitRange{T,A<:AbstractUnitRange{T}} <: AbstractUnitRange{T}
-    a :: A
-    function ZeroBasedUnitRange(a::AbstractUnitRange{T}) where {T}
-        @assert !Base.has_offset_axes(a)
-        new{T, typeof(a)}(a)
-    end
-end
-
-for Z in [:ZeroBasedRange, :ZeroBasedUnitRange]
-    @eval Base.parent(A::$Z) = A.a
-    @eval Base.first(A::$Z) = first(A.a)
-    @eval Base.length(A::$Z) = length(A.a)
-    @eval Base.last(A::$Z) = last(A.a)
-    @eval Base.size(A::$Z) = size(A.a)
-    @eval Base.axes(A::$Z) = map(x -> IdentityUnitRange(0:x-1), size(A.a))
-    @eval Base.getindex(A::$Z, i::Int) = A.a[i + 1]
-    @eval Base.firstindex(A::$Z) = 0
-    @eval Base.axes(A::$Z) = map(x -> IdentityUnitRange(0:x-1), size(A.a))
-    @eval Base.getindex(A::$Z, i::Integer) = A.a[i + 1]
-    @eval Base.step(A::$Z) = step(A.a)
-    @eval OffsetArrays.no_offset_view(A::$Z) = A.a
-    @eval function Base.show(io::IO, A::$Z)
-        show(io, A.a)
-        print(io, " with indices $(axes(A,1))")
-    end
-
-    for R in [:AbstractRange, :AbstractUnitRange, :StepRange]
-        @eval @inline function Base.getindex(A::$Z, r::$R{<:Integer})
-            @boundscheck checkbounds(A, r)
-            OffsetArrays._indexedby(A.a[r .+ 1], axes(r))
-        end
-    end
-    for R in [:UnitRange, :StepRange, :StepRangeLen, :LinRange]
-        @eval @inline function Base.getindex(A::$R, r::$Z)
-            @boundscheck checkbounds(A, r)
-            OffsetArrays._indexedby(A[r.a], axes(r))
-        end
-    end
-    @eval @inline function Base.getindex(A::StepRangeLen{<:Any,<:Base.TwicePrecision,<:Base.TwicePrecision}, r::$Z)
-        @boundscheck checkbounds(A, r)
-        OffsetArrays._indexedby(A[r.a], axes(r))
-    end
-end
+include("customranges.jl")
 
 function same_value(r1, r2)
     length(r1) == length(r2) || return false
@@ -517,6 +470,25 @@ end
             @test_throws BoundsError r[false:true:false]
         end
     end
+
+    @testset "iteration" begin
+        # parent has Base.OneTo axes
+        A = ones(4:10)
+        ax = axes(A, 1)
+        ind, st = iterate(ax)
+        @test A[ind] == A[4]
+        ind, st = iterate(ax, st)
+        @test A[ind] == A[5]
+
+        # parent doesn't have Base.OneTo axes
+        B = @view A[:]
+        C = OffsetArray(B, 0)
+        ax = axes(C, 1)
+        ind, st = iterate(ax)
+        @test C[ind] == C[4]
+        ind, st = iterate(ax, st)
+        @test C[ind] == C[5]
+    end
 end
 
 # used in testing the constructor
@@ -662,12 +634,19 @@ Base.Int(a::WeirdInteger) = a
         @test axes(OffsetVector(v, typemax(Int)-length(v))) == (IdOffsetRange(axes(v)[1], typemax(Int)-length(v)), )
         @test_throws OverflowError OffsetVector(v, typemax(Int)-length(v)+1)
         ao = OffsetArray(v, typemin(Int))
-        @test_nowarn OffsetArray{Float64, 1, typeof(ao)}(ao, (-1, ))
+        ao2 = OffsetArray{Float64, 1, typeof(ao)}(ao, (-1, ))
+        @test axes(ao2, 1) == typemin(Int) .+ (0:length(v)-1)
+        ao2 = OffsetArray(ao, (-1,))
+        @test axes(ao2, 1) == typemin(Int) .+ (0:length(v)-1)
         @test_throws OverflowError OffsetArray{Float64, 1, typeof(ao)}(ao, (-2, )) # inner Constructor
         @test_throws OverflowError OffsetArray(ao, (-2, )) # convinient constructor accumulate offsets
         @test_throws OverflowError OffsetVector(1:0, typemax(Int))
         @test_throws OverflowError OffsetVector(OffsetVector(1:0, 0), typemax(Int))
         @test_throws OverflowError OffsetArray(zeros(Int, typemax(Int):typemax(Int)), 2)
+        @test_throws OverflowError OffsetArray(v, OffsetArrays.Origin(typemax(Int)))
+
+        b = OffsetArray(OffsetArray(big(1):2, 1), typemax(Int)-1)
+        @test axes(b, 1) == big(typemax(Int)) .+ (1:2)
 
         @testset "OffsetRange" begin
             for r in Any[1:100, big(1):big(2)]
@@ -1245,6 +1224,9 @@ end
         OffsetArray(IdOffsetRange(IdOffsetRange(10:1000, -1), 1), 3), # offset index
 
         # AbstractRanges
+        Base.OneTo(1000),
+        CustomRange(Base.OneTo(1000)),
+        Slice(Base.OneTo(1000)),
         1:1000,
         UnitRange(1.0, 1000.0),
         1:3:1000,
@@ -1261,6 +1243,7 @@ end
         ZeroBasedUnitRange(1:1000), # offset range
         ZeroBasedRange(1:1000), # offset range
         ZeroBasedRange(1:1:1000), # offset range
+        CustomRange(ZeroBasedRange(1:1:1000)), # offset range
         ]
 
         # AbstractArrays with 1-based indices
@@ -1275,7 +1258,7 @@ end
             test_indexing_axes_and_vals(r1, r2)
             test_indexing_axes_and_vals(r1, collect(r2))
 
-            if r1 isa AbstractRange && axes(r2, 1) isa Base.OneTo
+            if r1 isa AbstractRange && !(r1 isa CustomRange) && axes(r2, 1) isa Base.OneTo
                 @test r1[r2] isa AbstractRange
             end
         end
@@ -1387,6 +1370,9 @@ end
         OffsetArray(IdOffsetRange(IdOffsetRange(10:1000, -1), 1), 3), # offset index
 
         # AbstractRanges
+        Base.OneTo(1000),
+        Slice(Base.OneTo(1000)),
+        CustomRange(Base.OneTo(1000)),
         1:1000,
         UnitRange(1.0, 1000.0),
         1:2:2000,
@@ -1394,6 +1380,7 @@ end
         1.0:2.0:2000.0,
         StepRangeLen(Float64(1), Float64(1000), 1000),
         LinRange(1.0, 2000.0, 2000),
+        Base.Slice(Base.OneTo(1000)), # 1-based index
         IdOffsetRange(Base.OneTo(1000)), # 1-based index
         IdOffsetRange(1:1000, 0), # 1-based index
         IdOffsetRange(Base.OneTo(1000), 4), # offset index
@@ -1406,6 +1393,7 @@ end
         ZeroBasedRange(1:1000), # offset index
         ZeroBasedRange(1:1:1000), # offset index
         ZeroBasedUnitRange(IdentityUnitRange(1:1000)), # offset index
+        CustomRange(ZeroBasedUnitRange(IdentityUnitRange(1:1000))), # offset index
         ]
 
         # AbstractArrays with offset axes
@@ -1905,6 +1893,82 @@ end
     Arsc = reshape(A, :, 1)
     Arsc[1,1] = 5
     @test first(A) == 5
+
+    @testset "issue #235" begin
+        Vec64  = zeros(6)
+        ind_a_64 = 3
+        ind_a_32 =Int32.(ind_a_64)
+        @test reshape(Vec64, ind_a_32, :) == reshape(Vec64, ind_a_64, :)
+    end
+
+    R = reshape(zeros(6), 2, :)
+    @test R isa Matrix
+    @test axes(R) == (1:2, 1:3)
+    R = reshape(zeros(6,1), 2, :)
+    @test R isa Matrix
+    @test axes(R) == (1:2, 1:3)
+
+    R = reshape(zeros(6), 1:2, :)
+    @test axes(R) == (1:2, 1:3)
+    R = reshape(zeros(6,1), 1:2, :)
+    @test axes(R) == (1:2, 1:3)
+
+    r = OffsetArray(ZeroBasedRange(3:4), 1);
+    @test reshape(r, 2) == 3:4
+    @test reshape(r, (2,)) == 3:4
+    @test reshape(r, :) == 3:4
+    @test reshape(r, (:,)) == 3:4
+
+    # getindex for a reshaped array that wraps an offset array is broken on 1.0
+    if VERSION >= v"1.1"
+        @test reshape(r, (2,:,4:4)) == OffsetArray(reshape(3:4, 2, 1, 1), 1:2, 1:1, 4:4)
+    end
+
+    # reshape works even if the parent doesn't have 1-based indices
+    # this works even if the parent doesn't support the reshape
+    r = OffsetArray(IdentityUnitRange(0:1), -1)
+    @test reshape(r, 2) == 0:1
+    @test reshape(r, (2,)) == 0:1
+    @test reshape(r, :) == OffsetArray(0:1, -1:0)
+    @test reshape(r, (:,)) == OffsetArray(0:1, -1:0)
+
+    @test reshape(ones(2:3, 4:5), (2, :)) == ones(2,2)
+
+    # more than one colon is not allowed
+    @test_throws Exception reshape(ones(3:4, 4:5, 1:2), :, :, 2)
+    @test_throws Exception reshape(ones(3:4, 4:5, 1:2), :, 2, :)
+
+    A = OffsetArray(rand(4, 4), -1, -1);
+    B = reshape(A, (2, :))
+    @test axes(B, 1) == 1:2
+    @test axes(B, 2) == 1:8
+
+    # some more exotic vector types
+    r = OffsetVector(CustomRange(ZeroBasedRange(0:2)), -2)
+    r2 = reshape(r, :)
+    @test r2 == r
+    r2 = reshape(r, 3)
+    @test axes(r2, 1) == 1:3
+    @test r2 == no_offset_view(r)
+    @test_throws Exception reshape(r, length(r) + 1)
+    @test_throws Exception reshape(r, 1:length(r) + 1)
+    rp = parent(r)
+    @test axes(reshape(rp, 4:6), 1) == 4:6
+    @test axes(reshape(r, (3,1))) == (1:3, 1:1)
+end
+
+@testset "permutedims" begin
+    a = OffsetArray(1:2, 2:3)
+    @test permutedims(a) == reshape(1:2, 1, 2:3)
+    a = OffsetArray([10,11], Base.OneTo(2))
+    @test permutedims(a) == reshape(10:11, 1, 1:2)
+    a = OffsetArray(SVector{2}(1,2), 3:4)
+    @test permutedims(a) == reshape(1:2, 1, 3:4)
+
+    # check that the 2D case is unaffected
+    a = OffsetArray(reshape(1:2, 1, 2), 2:2, 4:5)
+    b = permutedims(a)
+    @test a[2,:] == b[:,2]
 end
 
 @testset "Indexing with OffsetArray axes" begin
@@ -2021,10 +2085,10 @@ end
         b = map(BigInt, a)
         @test eltype(b) == BigInt
         @test b == a
-        @test b isa OffsetArrays.OffsetRange
+        @test parent(b) isa AbstractRange
 
         for ri in Any[2:3, Base.OneTo(2)]
-            for r in [IdentityUnitRange(ri), IdOffsetRange(ri), IdOffsetRange(ri, 1)]
+            for r in [IdentityUnitRange(ri), IdOffsetRange(ri), IdOffsetRange(ri, 1), OffsetArray(ri), OffsetArray(ri, 2)]
                 for T in [Int8, Int16, Int32, Int64, Int128, BigInt, Float32, Float64, BigFloat]
                     r2 = map(T, r)
                     @test eltype(r2) == T
@@ -2036,7 +2100,7 @@ end
 
         @testset "Bool" begin
             for ri in Any[0:0, 0:1, 1:0, 1:1, Base.OneTo(0), Base.OneTo(1)]
-                for r = Any[IdentityUnitRange(ri), IdOffsetRange(ri), IdOffsetRange(ri .- 1, 1)]
+                for r = Any[IdentityUnitRange(ri), IdOffsetRange(ri), IdOffsetRange(ri .- 1, 1), OffsetVector(ri)]
                     r2 = map(Bool, r)
                     @test eltype(r2) == Bool
                     @test axes(r2) == axes(r)
@@ -2176,6 +2240,18 @@ end
     B = fill(5, 3, -1:1)
     @test axes(B) == (1:3,-1:1)
     @test all(B.==5)
+
+    @testset "fill!" begin
+        D = dzeros((2,2))
+        DO = OffsetArray(D, 2, 2)
+        fill!(DO, 1)
+        @test all(isequal(1), DO)
+        @test all(iszero, zero(DO))
+
+        S = SVector{2,Int}(1,1)
+        SO = OffsetVector(S, -1)
+        @test zero(SO) isa typeof(SO)
+    end
 end
 
 @testset "broadcasting" begin
@@ -2547,4 +2623,72 @@ end
     @test_throws MethodError convert(OffsetArray{Float64, 3, Array{Float64,3}}, A)
 end
 
+@testset "center/centered" begin
+    @testset "center" begin
+        A = reshape(collect(1:9), 3, 3)
+        c = OffsetArrays.center(A)
+        @test c == (2, 2)
+        @test A[c...] == 5
+        @test OffsetArrays.center(A, RoundDown) == OffsetArrays.center(A, RoundUp)
+
+        A = reshape(collect(1:6), 2, 3)
+        c = OffsetArrays.center(A)
+        @test OffsetArrays.center(A, RoundDown) == c
+        @test c == (1, 2)
+        @test A[c...] == 3
+        c = OffsetArrays.center(A, RoundUp)
+        @test c == (2, 2)
+        @test A[c...] == 4
+    end
+
+    @testset "centered" begin
+        A = reshape(collect(1:9), 3, 3)
+        Ao = OffsetArrays.centered(A)
+        @test OffsetArrays.centered(Ao) === Ao
+        @test OffsetArrays.centered(Ao, OffsetArrays.center(Ao)) === Ao
+        @test typeof(Ao) <: OffsetArray
+        @test parent(Ao) === A
+        @test Ao.offsets == (-2, -2)
+        @test Ao[0, 0] == 5
+
+        A = reshape(collect(1:6), 2, 3)
+        Ao = OffsetArrays.centered(A)
+        @test OffsetArrays.centered(A, OffsetArrays.center(A, RoundDown)) == Ao
+        @test typeof(Ao) <: OffsetArray
+        @test parent(Ao) === A
+        @test Ao.offsets == (-1, -2)
+        @test Ao[0, 0] == 3
+        Ao = OffsetArrays.centered(A, OffsetArrays.center(A, RoundUp))
+        @test typeof(Ao) <: OffsetArray
+        @test parent(Ao) === A
+        @test Ao.offsets == (-2, -2)
+        @test Ao[0, 0] == 4
+
+        A = reshape(collect(1:9), 3, 3)
+        Ao = OffsetArray(A, -1, -1)
+        Aoo = OffsetArrays.centered(Ao)
+        @test parent(Aoo) === A # there will be only one OffsetArray wrapper
+        @test Aoo.offsets == (-2, -2)
+        @test Aoo[0, 0] == 5
+    end
+end
+
 include("origin.jl")
+
+@testset "misc" begin
+    @test OffsetArrays._subtractoffset(Base.OneTo(2), 1) isa AbstractUnitRange{Int}
+    @test OffsetArrays._subtractoffset(Base.OneTo(2), 1) == 0:1
+    @test OffsetArrays._subtractoffset(3:2:9, 1) isa AbstractRange{Int}
+    @test OffsetArrays._subtractoffset(3:2:9, 1) == 2:2:8
+
+    @test OffsetArrays._addoffset(Base.OneTo(2), 1) isa AbstractUnitRange{Int}
+    @test OffsetArrays._addoffset(Base.OneTo(2), 1) == 2:3
+    @test OffsetArrays._addoffset(3:2:9, 1) isa AbstractRange{Int}
+    @test OffsetArrays._addoffset(3:2:9, 1) == 4:2:10
+end
+
+@info "Following deprecations are expected"
+@testset "deprecations" begin
+    A = reshape(collect(1:9), 3, 3)
+    @test OffsetArrays.centered(A, RoundDown) == OffsetArrays.centered(A, RoundUp)
+end

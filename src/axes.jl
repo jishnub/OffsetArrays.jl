@@ -9,33 +9,35 @@ i.e., it's the "identity," which is the origin of the "Id" in `IdOffsetRange`.
 # Examples
 
 The most common case is shifting a range that starts at 1 (either `1:n` or `Base.OneTo(n)`):
-```jldoctest; setup=:(import OffsetArrays)
-julia> ro = OffsetArrays.IdOffsetRange(1:3, -2)
-OffsetArrays.IdOffsetRange(values=-1:1, indices=-1:1)
+```jldoctest ior
+julia> using OffsetArrays: IdOffsetRange
+
+julia> ro = IdOffsetRange(1:3, -2)
+IdOffsetRange(values=-1:1, indices=-1:1)
 
 julia> axes(ro, 1)
-OffsetArrays.IdOffsetRange(values=-1:1, indices=-1:1)
+IdOffsetRange(values=-1:1, indices=-1:1)
 
 julia> ro[-1]
 -1
 
 julia> ro[3]
-ERROR: BoundsError: attempt to access 3-element OffsetArrays.$(IdOffsetRange{Int,UnitRange{Int}}) with indices -1:1 at index [3]
+ERROR: BoundsError: attempt to access 3-element $(IdOffsetRange{Int,UnitRange{Int}}) with indices -1:1 at index [3]
 ```
 
 If the range doesn't start at 1, the values may be different from the indices:
-```jldoctest; setup=:(import OffsetArrays)
-julia> ro = OffsetArrays.IdOffsetRange(11:13, -2)
-OffsetArrays.IdOffsetRange(values=9:11, indices=-1:1)
+```jldoctest ior
+julia> ro = IdOffsetRange(11:13, -2)
+IdOffsetRange(values=9:11, indices=-1:1)
 
 julia> axes(ro, 1)     # 11:13 is indexed by 1:3, and the offset is also applied to the axes
-OffsetArrays.IdOffsetRange(values=-1:1, indices=-1:1)
+IdOffsetRange(values=-1:1, indices=-1:1)
 
 julia> ro[-1]
 9
 
 julia> ro[3]
-ERROR: BoundsError: attempt to access 3-element OffsetArrays.$(IdOffsetRange{Int,UnitRange{Int}}) with indices -1:1 at index [3]
+ERROR: BoundsError: attempt to access 3-element $(IdOffsetRange{Int,UnitRange{Int}}) with indices -1:1 at index [3]
 ```
 
 # Extended help
@@ -179,15 +181,23 @@ for f in [:first, :last]
     @eval @inline Base.$f(r::IdOffsetRange) = eltype(r)($f(r.parent) + r.offset)
 end
 
-Base.iterate(r::IdOffsetRange, i...) = _iterate(r, i...)
+# Iteration for an IdOffsetRange
+@inline Base.iterate(r::IdOffsetRange, i...) = _iterate(r, i...)
+# In general we iterate over the parent term by term and add the offset.
+# This might have some performance degradation when coupled with bounds-checking
+# See https://github.com/JuliaArrays/OffsetArrays.jl/issues/214
 @inline function _iterate(r::IdOffsetRange, i...)
     ret = iterate(r.parent, i...)
     ret === nothing && return nothing
     return (eltype(r)(ret[1] + r.offset), ret[2])
 end
-@inline _iterate(r::IdOffsetRange{<:Integer, <:Base.OneTo}, i...) = iterate(r.parent .+ r.offset, i...)
-
-@inline Base.iterate(r::IdOffsetRange, i...) = iterate(UnitRange(r), i...)
+# Base.OneTo(n) is known to be exactly equivalent to the range 1:n,
+# and has no specialized iteration defined for it,
+# so we may add the offset to the range directly and iterate over the result
+# This gets around the performance issue described in issue #214
+# We use the helper function _addoffset to evaluate the range instead of broadcasting
+# just in case this makes it easy for the compiler.
+@inline _iterate(r::IdOffsetRange{<:Integer, <:Base.OneTo}, i...) = iterate(_addoffset(r.parent, r.offset), i...)
 
 @inline function Base.getindex(r::IdOffsetRange, i::Integer)
     i isa Bool && throw(ArgumentError("invalid index: $i of type Bool"))
@@ -222,6 +232,14 @@ end
 
 for T in [:AbstractUnitRange, :StepRange]
     @eval @inline function Base.getindex(r::IdOffsetRange, s::$T{<:Integer})
+        @boundscheck checkbounds(r, s)
+        return _getindex(r, s)
+    end
+end
+
+# These methods are necessary to avoid ambiguity
+for R in [:IIUR, :IdOffsetRange]
+    @eval @inline function Base.getindex(r::IdOffsetRange, s::$R)
         @boundscheck checkbounds(r, s)
         return _getindex(r, s)
     end

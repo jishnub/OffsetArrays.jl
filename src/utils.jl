@@ -2,10 +2,17 @@
 
 _indexoffset(r::AbstractRange) = first(r) - 1
 _indexoffset(i::Integer) = 0
-_indexoffset(i::Colon) = 0
 _indexlength(r::AbstractRange) = length(r)
-_indexlength(i::Integer) = i
+_indexlength(i::Integer) = Int(i)
 _indexlength(i::Colon) = Colon()
+
+# utility methods used in reshape
+# we don't use _indexlength in this to avoid converting the arguments to Int
+_checksize(ind::Integer, s) = ind == s
+_checksize(ind::AbstractUnitRange, s) = length(ind) == s
+
+_toaxis(i::Integer) = Base.OneTo(i)
+_toaxis(i) = i
 
 _strip_IdOffsetRange(r::IdOffsetRange) = parent(r)
 _strip_IdOffsetRange(r) = r
@@ -14,6 +21,7 @@ _offset(axparent::AbstractUnitRange, ax::AbstractUnitRange) = first(ax) - first(
 _offset(axparent::AbstractUnitRange, ::Union{Integer, Colon}) = 1 - first(axparent)
 
 _offsets(A::AbstractArray) = map(ax -> first(ax) - 1, axes(A))
+_offsets(A::AbstractArray, B::AbstractArray) = map(_offset, axes(B), axes(A))
 
 """
     OffsetArrays.AxisConversionStyle(typeof(indices))
@@ -91,8 +99,12 @@ end
 # These functions are equivalent to the broadcasted operation r .- of
 # However these ensure that the result is an AbstractRange even if a specific
 # broadcasting behavior is not defined for a custom type
-_subtractoffset(r::AbstractUnitRange, of) = UnitRange(first(r) - of, last(r) - of)
-_subtractoffset(r::AbstractRange, of) = range(first(r) - of, stop = last(r) - of, step = step(r))
+@inline _subtractoffset(r::AbstractUnitRange, of) = UnitRange(first(r) - of, last(r) - of)
+@inline _subtractoffset(r::AbstractRange, of) = range(first(r) - of, stop = last(r) - of, step = step(r))
+
+# similar to _subtractoffset, except these evaluate r .+ of
+@inline _addoffset(r::AbstractUnitRange, of) = UnitRange(first(r) + of, last(r) + of)
+@inline _addoffset(r::AbstractRange, of) = range(first(r) + of, stop = last(r) + of, step = step(r))
 
 if VERSION <= v"1.7.0-DEV.1039"
     _contiguousindexingtype(r::AbstractUnitRange{<:Integer}) = UnitRange{Int}(r)
@@ -102,3 +114,11 @@ end
 
 _of_eltype(::Type{T}, M::AbstractArray{T}) where {T} = M
 _of_eltype(T, M::AbstractArray) = map(T, M)
+
+# filter the arguments to reshape to check if there are any ranges
+# If not, we may pop the parent array
+_filterreshapeinds(t::Tuple{AbstractUnitRange, Vararg{Any}}) = t
+_filterreshapeinds(t::Tuple) = _filterreshapeinds(tail(t))
+_filterreshapeinds(t::Tuple{}) = t
+_popreshape(A::AbstractArray, ax::Tuple{Vararg{Base.OneTo}}, inds::Tuple{}) = no_offset_view(A)
+_popreshape(A::AbstractArray, ax, inds) = A
